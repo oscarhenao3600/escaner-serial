@@ -153,12 +153,29 @@
   }
   #camera-controls {
     display: flex;
-    justify-content: space-around;
+    justify-content: center;
     align-items: center;
     width: 100%;
     max-width: 420px;
     margin-top: 14px;
-    gap: 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ctrl-select {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--ink);
+    padding: 10px 16px;
+    border-radius: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    outline: none;
+    max-width: 180px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
   }
   .ctrl-btn {
     background: var(--panel);
@@ -238,6 +255,7 @@
 </div>
 
 <div id="camera-controls">
+  <select id="camera-select" class="ctrl-select" style="display:none;"></select>
   <button id="torch-btn" class="ctrl-btn" style="display:none;">🔦 Linterna</button>
   <div id="zoom-controls" class="ctrl-group" style="display:none;">
     <span class="ctrl-label">Zoom</span>
@@ -280,7 +298,8 @@
   var openBtn = document.getElementById('open-btn');
   var rescanBtn = document.getElementById('rescan-btn');
 
-  // Camera Track Controls
+  // Camera Selector and Track Controls
+  var cameraSelect = document.getElementById('camera-select');
   var activeTrack = null;
   var torchActive = false;
   var torchBtn = document.getElementById('torch-btn');
@@ -308,7 +327,7 @@
       
       // 1. Linterna (Torch)
       if (capabilities.torch) {
-        torchBtn.style.display = 'flex';
+        torchBtn.style.display = 'inline-flex';
         torchActive = false;
         torchBtn.classList.remove('active');
         torchBtn.innerHTML = '🔦 Linterna';
@@ -381,6 +400,20 @@
     });
   });
 
+  // Camera Selector Event Listener
+  cameraSelect.addEventListener('change', function() {
+    var newDeviceId = cameraSelect.value;
+    localStorage.setItem('selectedCameraId', newDeviceId);
+    if (scanning) {
+      codeReader.reset();
+      resetCameraControls();
+      statusEl.textContent = "Cambiando de cámara...";
+      setTimeout(function() {
+        startScanningWithDevice(newDeviceId);
+      }, 350);
+    }
+  });
+
   // Optimize formats: prioritize QR and Code 128 (seen in the image) for better speed and less false positives
   var hints = new Map();
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
@@ -418,6 +451,28 @@
     if (navigator.vibrate) navigator.vibrate(80);
   }
 
+  function updateCameraStatus() {
+    if (activeTrack) {
+      try {
+        var settings = typeof activeTrack.getSettings === 'function' ? activeTrack.getSettings() : {};
+        var label = activeTrack.label || 'Cámara';
+        // Clean up common long device names for display
+        label = label.replace(/camera|video/gi, '').trim();
+        if (label.length > 20) label = label.substring(0, 18) + '...';
+        
+        var resStr = "";
+        if (settings.width && settings.height) {
+          resStr = " " + settings.width + "x" + settings.height;
+        }
+        statusEl.textContent = "Buscando código... [" + label + resStr + "]";
+      } catch (e) {
+        statusEl.textContent = "Buscando código de barras/QR...";
+      }
+    } else {
+      statusEl.textContent = "Buscando código de barras/QR...";
+    }
+  }
+
   function setupTrackFromVideo() {
     var video = document.getElementById('video');
     if (video && video.srcObject) {
@@ -425,64 +480,98 @@
       if (track) {
         activeTrack = track;
         setupControlsForTrack(track);
+        updateCameraStatus();
       }
     }
   }
 
-  function startScanning(){
+  function startScanning() {
     scanning = true;
-    resetCameraControls();
     resultEl.classList.remove('show');
     errorEl.classList.remove('show');
     videoWrap.style.display = 'block';
-    statusEl.textContent = "Iniciando cámara...";
+    statusEl.textContent = "Cargando dispositivos...";
 
     codeReader.listVideoInputDevices().then(function(devices){
       if (!devices || devices.length === 0){
         showError("No se encontró ninguna cámara en este dispositivo.");
         return;
       }
-      var deviceId = devices[0].deviceId;
-      for (var i=0; i<devices.length; i++){
-        if (/back|rear|environment/i.test(devices[i].label)){
-          deviceId = devices[i].deviceId;
-          break;
+
+      // Populate Select Dropdown
+      cameraSelect.innerHTML = "";
+      devices.forEach(function(device, idx) {
+        var opt = document.createElement('option');
+        opt.value = device.deviceId;
+        var label = device.label || 'Cámara ' + (idx + 1);
+        opt.text = label;
+        cameraSelect.appendChild(opt);
+      });
+      cameraSelect.style.display = devices.length > 1 ? 'block' : 'none';
+
+      // Determine initial device
+      var savedId = localStorage.getItem('selectedCameraId');
+      var startId = devices[0].deviceId;
+      var hasSaved = devices.some(function(d) { return d.deviceId === savedId; });
+
+      if (hasSaved) {
+        startId = savedId;
+      } else {
+        // Look for back camera
+        for (var i = 0; i < devices.length; i++) {
+          if (/back|rear|environment/i.test(devices[i].label)) {
+            startId = devices[i].deviceId;
+            break;
+          }
         }
       }
-      statusEl.textContent = "Buscando código de barras...";
 
-      var constraints = {
+      cameraSelect.value = startId;
+      startScanningWithDevice(startId);
+    }).catch(function(err){
+      showError("No se pudo listar las cámaras. Revisa los permisos y abre la página por HTTPS. Detalle: " + err.message);
+    });
+  }
+
+  function startScanningWithDevice(deviceId) {
+    resetCameraControls();
+    statusEl.textContent = "Iniciando cámara...";
+
+    var constraints = {
+      video: {
+        deviceId: { exact: deviceId },
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        advanced: [{ focusMode: 'continuous' }]
+      }
+    };
+
+    codeReader.decodeFromConstraints(constraints, 'video', function(result, err){
+      if (result){
+        onScanSuccess(result.getText());
+      }
+    }).then(function(){
+      setupTrackFromVideo();
+    }).catch(function(err){
+      console.warn("Fallo resolución ideal, intentando fallback...", err);
+      var fallbackConstraints = {
         video: {
-          deviceId: { exact: deviceId },
+          deviceId: deviceId ? { ideal: deviceId } : undefined,
           facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          advanced: [{ focusMode: 'continuous' }]
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       };
-
-      codeReader.decodeFromConstraints(constraints, 'video', function(result, err){
+      codeReader.decodeFromConstraints(fallbackConstraints, 'video', function(result, err){
         if (result){
           onScanSuccess(result.getText());
         }
       }).then(function(){
         setupTrackFromVideo();
-      }).catch(function(){
-        var fallbackConstraints = {
-          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-        };
-        codeReader.decodeFromConstraints(fallbackConstraints, 'video', function(result, err){
-          if (result){
-            onScanSuccess(result.getText());
-          }
-        }).then(function(){
-          setupTrackFromVideo();
-        }).catch(function(err2){
-          showError("No se pudo acceder a la cámara en alta resolución. Detalle: " + err2.message);
-        });
+      }).catch(function(err2){
+        showError("No se pudo iniciar el escaneo con la cámara elegida. Detalle: " + err2.message);
       });
-    }).catch(function(err){
-      showError("No se pudo acceder a la cámara. Revisa que hayas dado permiso de cámara al navegador, y que la página se abra por HTTPS. Detalle: " + err.message);
     });
   }
 
