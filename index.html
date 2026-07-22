@@ -151,6 +151,79 @@
     color:var(--muted);
     text-decoration:underline;
   }
+  #camera-controls {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    width: 100%;
+    max-width: 420px;
+    margin-top: 14px;
+    gap: 12px;
+  }
+  .ctrl-btn {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--ink);
+    padding: 10px 16px;
+    border-radius: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    transition: all 0.2s ease;
+    width: auto;
+    margin: 0;
+  }
+  .ctrl-btn:active {
+    background: #F4F1EA;
+  }
+  .ctrl-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .ctrl-group {
+    display: flex;
+    align-items: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 3px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  }
+  .ctrl-label {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 0 6px 0 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .02em;
+  }
+  .zoom-btn {
+    background: transparent;
+    border: none;
+    color: var(--ink);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.2s ease;
+    margin: 0 1px;
+  }
+  .zoom-btn.active {
+    background: var(--accent);
+    color: #fff;
+  }
 </style>
 </head>
 <body>
@@ -162,6 +235,16 @@
   <video id="video" playsinline autoplay muted></video>
   <div id="frame"></div>
   <div id="scan-line"></div>
+</div>
+
+<div id="camera-controls">
+  <button id="torch-btn" class="ctrl-btn" style="display:none;">🔦 Linterna</button>
+  <div id="zoom-controls" class="ctrl-group" style="display:none;">
+    <span class="ctrl-label">Zoom</span>
+    <button id="zoom-1x" class="zoom-btn active" data-zoom="1">1x</button>
+    <button id="zoom-2x" class="zoom-btn" data-zoom="2">2x</button>
+    <button id="zoom-3x" class="zoom-btn" data-zoom="3">3x</button>
+  </div>
 </div>
 
 <div id="status">Iniciando cámara...</div>
@@ -197,20 +280,115 @@
   var openBtn = document.getElementById('open-btn');
   var rescanBtn = document.getElementById('rescan-btn');
 
+  // Camera Track Controls
+  var activeTrack = null;
+  var torchActive = false;
+  var torchBtn = document.getElementById('torch-btn');
+  var zoomControls = document.getElementById('zoom-controls');
+  var zoomButtons = document.querySelectorAll('.zoom-btn');
+
+  function resetCameraControls() {
+    activeTrack = null;
+    torchActive = false;
+    torchBtn.style.display = 'none';
+    torchBtn.classList.remove('active');
+    torchBtn.innerHTML = '🔦 Linterna';
+    zoomControls.style.display = 'none';
+    zoomButtons.forEach(function(btn) {
+      btn.classList.remove('active');
+      if (btn.getAttribute('data-zoom') === '1') {
+        btn.classList.add('active');
+      }
+    });
+  }
+
+  function setupControlsForTrack(track) {
+    try {
+      var capabilities = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+      
+      // 1. Linterna (Torch)
+      if (capabilities.torch) {
+        torchBtn.style.display = 'flex';
+        torchActive = false;
+        torchBtn.classList.remove('active');
+        torchBtn.innerHTML = '🔦 Linterna';
+      } else {
+        torchBtn.style.display = 'none';
+      }
+
+      // 2. Zoom
+      if (capabilities.zoom) {
+        zoomControls.style.display = 'flex';
+        var minZoom = capabilities.zoom.min || 1;
+        var maxZoom = capabilities.zoom.max || 1;
+        
+        zoomButtons.forEach(function(btn) {
+          var factor = parseFloat(btn.getAttribute('data-zoom'));
+          if (factor < minZoom || factor > maxZoom) {
+            btn.style.display = 'none';
+          } else {
+            btn.style.display = 'inline-flex';
+          }
+        });
+      } else {
+        zoomControls.style.display = 'none';
+      }
+    } catch (e) {
+      console.warn("No se pudieron configurar los controles de cámara:", e);
+    }
+  }
+
+  // Event handlers for torch and zoom
+  torchBtn.addEventListener('click', function() {
+    if (!activeTrack) return;
+    try {
+      torchActive = !torchActive;
+      activeTrack.applyConstraints({
+        advanced: [{ torch: torchActive }]
+      }).then(function() {
+        if (torchActive) {
+          torchBtn.classList.add('active');
+          torchBtn.innerHTML = '🔦 Apagar';
+        } else {
+          torchBtn.classList.remove('active');
+          torchBtn.innerHTML = '🔦 Linterna';
+        }
+      }).catch(function(err) {
+        console.error("Error al aplicar linterna:", err);
+        torchActive = !torchActive;
+      });
+    } catch (e) {
+      console.error("Error de linterna:", e);
+    }
+  });
+
+  zoomButtons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!activeTrack) return;
+      var zoomVal = parseFloat(btn.getAttribute('data-zoom'));
+      try {
+        activeTrack.applyConstraints({
+          advanced: [{ zoom: zoomVal }]
+        }).then(function() {
+          zoomButtons.forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+        }).catch(function(err) {
+          console.error("Error al aplicar zoom:", err);
+        });
+      } catch(e) {
+        console.error("Error de zoom:", e);
+      }
+    });
+  });
+
+  // Optimize formats: prioritize QR and Code 128 (seen in the image) for better speed and less false positives
   var hints = new Map();
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-    ZXing.BarcodeFormat.EAN_13,
-    ZXing.BarcodeFormat.EAN_8,
-    ZXing.BarcodeFormat.UPC_A,
-    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.QR_CODE,
     ZXing.BarcodeFormat.CODE_128,
     ZXing.BarcodeFormat.CODE_39,
-    ZXing.BarcodeFormat.CODE_93,
-    ZXing.BarcodeFormat.ITF,
-    ZXing.BarcodeFormat.CODABAR,
-    ZXing.BarcodeFormat.QR_CODE,
-    ZXing.BarcodeFormat.DATA_MATRIX
+    ZXing.BarcodeFormat.EAN_13
   ]);
 
   var codeReader = new ZXing.BrowserMultiFormatReader(hints);
@@ -230,6 +408,7 @@
   function onScanSuccess(text){
     if (!scanning) return;
     scanning = false;
+    resetCameraControls();
     codeReader.reset();
     videoWrap.style.display = 'none';
     statusEl.textContent = "";
@@ -239,8 +418,20 @@
     if (navigator.vibrate) navigator.vibrate(80);
   }
 
+  function setupTrackFromVideo() {
+    var video = document.getElementById('video');
+    if (video && video.srcObject) {
+      var track = video.srcObject.getVideoTracks()[0];
+      if (track) {
+        activeTrack = track;
+        setupControlsForTrack(track);
+      }
+    }
+  }
+
   function startScanning(){
     scanning = true;
+    resetCameraControls();
     resultEl.classList.remove('show');
     errorEl.classList.remove('show');
     videoWrap.style.display = 'block';
@@ -274,6 +465,8 @@
         if (result){
           onScanSuccess(result.getText());
         }
+      }).then(function(){
+        setupTrackFromVideo();
       }).catch(function(){
         var fallbackConstraints = {
           video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
@@ -282,6 +475,8 @@
           if (result){
             onScanSuccess(result.getText());
           }
+        }).then(function(){
+          setupTrackFromVideo();
         }).catch(function(err2){
           showError("No se pudo acceder a la cámara en alta resolución. Detalle: " + err2.message);
         });
