@@ -246,7 +246,7 @@
 <body>
 
 <h1>Escanear serial del dispositivo</h1>
-<p class="sub">Apunta la cámara al código de barras</p>
+<p class="sub">Apunta la cámara al código de barras. Si no enfoca, toca la pantalla.</p>
 
 <div id="video-wrap">
   <video id="video" playsinline autoplay muted></video>
@@ -414,17 +414,30 @@
     }
   });
 
-  // Optimize formats: prioritize QR and Code 128 (seen in the image) for better speed and less false positives
+  // Optimize formats: cubrimos QR y los 1D más comunes en etiquetas de serial.
+  // OJO: si restringes demasiado los formatos y el serial usa uno que no está
+  // en la lista, ZXing NUNCA lo va a leer (esta es la causa #1 de "no detecta nada").
   var hints = new Map();
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
     ZXing.BarcodeFormat.QR_CODE,
     ZXing.BarcodeFormat.CODE_128,
     ZXing.BarcodeFormat.CODE_39,
-    ZXing.BarcodeFormat.EAN_13
+    ZXing.BarcodeFormat.CODE_93,
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.ITF,
+    ZXing.BarcodeFormat.CODABAR,
+    ZXing.BarcodeFormat.DATA_MATRIX
   ]);
 
-  var codeReader = new ZXing.BrowserMultiFormatReader(hints);
+  // El 2do parámetro es el intervalo entre intentos de decodificación (ms).
+  // El default de la librería es 500ms, que en 1D con la cámara en movimiento
+  // es demasiado lento: bajamos a 100ms para intentar leer muchos más frames
+  // por segundo y aumentar la probabilidad de capturar uno enfocado y nítido.
+  var codeReader = new ZXing.BrowserMultiFormatReader(hints, 100);
   var lastFinalUrl = "";
   var scanning = false;
 
@@ -472,6 +485,25 @@
       statusEl.textContent = "Buscando código de barras/QR...";
     }
   }
+
+  // Toca el video para forzar un re-enfoque manual. En muchos Android el
+  // focusMode:'continuous' no reacciona rápido cuando acercás el celular a
+  // pocos cm de la etiqueta (rango macro), que es justo la distancia típica
+  // para leer un serial. Este truco resetea el foco pidiendo single-shot.
+  document.getElementById('video').addEventListener('click', function(){
+    if (!activeTrack || typeof activeTrack.getCapabilities !== 'function') return;
+    try {
+      var caps = activeTrack.getCapabilities();
+      if (caps.focusMode && caps.focusMode.indexOf('single-shot') !== -1) {
+        activeTrack.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] })
+          .then(function(){
+            setTimeout(function(){
+              activeTrack.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function(){});
+            }, 400);
+          }).catch(function(e){ console.warn('No se pudo re-enfocar:', e); });
+      }
+    } catch(e) { console.warn('Re-enfoque no soportado:', e); }
+  });
 
   function setupTrackFromVideo() {
     var video = document.getElementById('video');
@@ -537,12 +569,18 @@
     resetCameraControls();
     statusEl.textContent = "Iniciando cámara...";
 
+    // OJO: combinar deviceId "exact" con facingMode:'environment' puede provocar
+    // OverconstrainedError en algunos navegadores/Android si ese deviceId puntual
+    // no reporta el facingMode esperado. Como el usuario ya eligió la cámara por
+    // su deviceId, quitamos facingMode acá para no chocar con esa elección.
+    // También bajamos la resolución "ideal" a 1280x720: en 1920x1080 muchos
+    // celulares de gama media bajan los FPS reales y el autoenfoque tarda más,
+    // lo que en la práctica reduce -no aumenta- la tasa de lectura de códigos 1D.
     var constraints = {
       video: {
         deviceId: { exact: deviceId },
-        facingMode: 'environment',
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
         advanced: [{ focusMode: 'continuous' }]
       }
     };
